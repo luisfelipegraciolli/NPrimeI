@@ -1,10 +1,10 @@
 # primos_mpi.py
 from mpi4py import MPI
 import numpy as np
+import sys
 import math
 
-# Checa numeros primos em um intervalo com uma função desejada
-
+N_PADRAO = 1_000
 
 
 def prime_nums_interval(is_prime_function, inicio, fim):
@@ -98,20 +98,101 @@ def primos_crivo(inicio, fim):
 
 
 # Fazer com que o MPI rode esses algotimos
+ALGORITMOS = {
+    "trivial": primos_trivial,
+    "raiz": primos_raiz,
+    "crivo": primos_crivo,
+}
+
+
+def consolidar(partes, tempos_ms):
+    """Junta os resultados de todos os processos para UM algoritmo.
+ 
+    partes: lista com os primos de cada processo (na ordem dos ranks)
+    tempos_ms: lista com o tempo de cada processo, em ms
+ 
+    Como os segmentos são contíguos e crescentes, basta concatenar as partes.
+    O tempo "oficial" é o do processo mais lento, pois é ele que faz o
+    programa terminar.
+    """
+    primos = [p for parte in partes for p in parte]
+    return {
+        "primos": primos,
+        "total_ms": max(tempos_ms),
+        "tempos_ms": tempos_ms,
+    }
+
+def todos_iguais(consolidados):
+    """True se todos os algoritmos encontraram exatamente os mesmos primos."""
+    listas = [c["primos"] for c in consolidados.values()]
+    return all(lista == listas[0] for lista in listas)
+
+
+
+def imprimir_resumo(consolidados, n, quantidade_processos):
+    print(f"\nIntervalo: 1..{n} | Processos: {quantidade_processos}\n")
+ 
+    print(f"{'algoritmo':<10} {'total (ms)':>12} {'primos':>8}   tempo por processo (ms)")
+    print("-" * 72)
+    for nome, c in consolidados.items():
+        por_processo = "  ".join(f"{t:.1f}" for t in c["tempos_ms"])
+        print(f"{nome:<10} {c['total_ms']:>12.1f} {len(c['primos']):>8}   {por_processo}")
+ 
+    print()
+    if todos_iguais(consolidados):
+        print("Os três algoritmos encontraram os mesmos primos.")
+    else:
+        print("ATENÇÃO: os algoritmos encontraram primos diferentes!")
+
 
 def main():
-    # [inicio, fim)
-    inicio = 1
-    fim = 101
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+ 
+    # o rank 0 divide 1..N em segmentos iguais e distribui
+    if rank == 0:
+        n = int(sys.argv[1]) if len(sys.argv) > 1 else N_PADRAO
+        segmentos = np.array_split(np.arange(1, n + 1), size)
+    else:
+        n = None
+        segmentos = None
+ 
+    n = comm.bcast(n, root=0)
+    meu_segmento = comm.scatter(segmentos, root=0)
+ 
+    if len(meu_segmento) == 0:  # acontece se N < número de processos
+        inicio, fim = 1, 1
+    else:
+        inicio, fim = int(meu_segmento[0]), int(meu_segmento[-1]) + 1
 
-    list_of_prime_n0 = primos_trivial(inicio, fim)
-    list_of_prime_n1 = primos_raiz(inicio, fim)
-    list_of_prime_n2 = primos_crivo(inicio, fim)
-    
-    
-    print(list_of_prime_n0)
-    print(list_of_prime_n1)
-    print(list_of_prime_n2)
-    
-main()
 
+    # roda cada algoritmo no mesmo segmento e mede o tempo
+    consolidados = {}
+
+    for nome, algoritmo in ALGORITMOS.items():
+        comm.Barrier()
+        t0 = MPI.Wtime()
+        primos_locais = algoritmo(inicio, fim)
+        ms = (MPI.Wtime() - t0) * 1000
+
+        tempos_ms = comm.gather(ms, root=0)
+        partes = comm.gather(primos_locais, root=0)
+
+        if rank == 0:
+            consolidados[nome] = consolidar(partes, tempos_ms)
+
+    
+    if rank == 0:
+        imprimir_resumo(consolidados, n, size)
+
+
+    # Junte partes numa lista única e guarde por algoritmo.
+    # O tempo "oficial" de um algoritmo é o do processo mais lento: max(tempos). Guarde também a lista tempos para ver cada processo.
+    # No final, confira que os três algoritmos produziram exatamente o mesmo resultado, com um assert ou uma comparação simples.
+
+    
+
+
+if __name__ == "__main__":
+    main()

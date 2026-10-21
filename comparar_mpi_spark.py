@@ -1,22 +1,26 @@
 # comparar_mpi_spark.py
 #
-# Lê os CSVs do MPI e do Spark e gera gráficos de tempo, speedup e eficiência.
+# Lê mpi.csv e spark.csv e compara os dois frameworks em gráficos (matplotlib):
+#   tempo.png            tempo de execução (ms) por nº de processos/partições
+#   speedup.png          speedup de cada framework
+#   eficiencia.png       eficiência de cada framework
+#   comparacao_direta.png  razão MPI/Spark no mesmo p (>1 = Spark mais rápido)
 #
 # Uso:
-#   python comparar_mpi_spark.py --mpi mpi_1.csv --spark spark_1.csv
-#   python comparar_mpi_spark.py --mpi mpi_1.csv --spark spark_1.csv --saida graficos --sem-janela
+#   python comparar_mpi_spark.py
+#   python comparar_mpi_spark.py --mpi mpi.csv --spark spark.csv --saida graficos --sem-janela
 #
-# Definições, para cada algoritmo e N (T = ms_total, a tarefa/processo mais lento):
-#   speedup próprio     S(p)  = T_fw(1) / T_fw(p)       baseline: o mesmo framework com p=1
-#   speedup vs MPI      S(p)  = T_mpi(1) / T_fw(p)      baseline: MPI sequencial (p=1), comum aos dois
-#   eficiência          E(p)  = S(p) / p
+# Duas métricas de tempo, nos dois frameworks:
+#   ms_total   processo/tarefa MAIS LENTO, só computação
+#   ms_parede  ponta a ponta (MPI: até o rank 0 ter todos os primos; Spark: collect() no driver)
 #
-# Por que dois baselines: o speedup "próprio" mostra como cada framework escala, mas esconde
-# que o Spark com p=1 pode ser mais lento/rápido que o MPI com p=1. O speedup "vs MPI"
-# usa o mesmo ponto de partida para os dois e mostra quem realmente termina antes.
+# Definições (cada framework contra ele mesmo, com a mesma métrica):
+#   speedup(p)    = T(1) / T(p)
+#   eficiência(p) = speedup(p) / p
+# Se faltar p=1 para alguma configuração, usa o menor p disponível (e avisa).
 #
-# Execuções repetidas da mesma configuração viram média, com barra de erro (desvio padrão)
-# no gráfico de tempo. Configurações com uma única execução ficam sem barra.
+# Execuções repetidas da mesma configuração viram média; se houver repetições,
+# o gráfico de tempo mostra barras de erro (desvio padrão).
 
 import argparse
 import os
@@ -28,6 +32,9 @@ import pandas as pd
 ORDEM_ALGOS = ["trivial", "raiz", "crivo"]
 COR = {"MPI": "tab:blue", "Spark": "tab:orange"}
 MARCA = {"MPI": "o", "Spark": "s"}
+METRICAS = {"total": "ms_total", "parede": "ms_parede"}
+ESTILO_METRICA = {"total": {"ls": "-", "alpha": 1.0}, "parede": {"ls": "--", "alpha": 0.75}}
+ROTULO_METRICA = {"total": "ms_total", "parede": "ms_parede"}
 
 
 # ----------------------------------------------------------------------
@@ -35,11 +42,11 @@ MARCA = {"MPI": "o", "Spark": "s"}
 # ----------------------------------------------------------------------
 
 def carregar(caminho_mpi, caminho_spark):
-    """Une os dois CSVs: framework, algo, N, p, ms_total, ms_parede (NaN no MPI)."""
+    """Une os dois CSVs: framework, algo, N, p, ms_total, ms_parede."""
     mpi = pd.read_csv(caminho_mpi).rename(columns={"N_processos": "p"})
     spark = pd.read_csv(caminho_spark).rename(columns={"N_particoes": "p"})
 
-    for df in (mpi, spark):
+    for df in (mpi, spark):  # CSV antigo sem ms_parede continua funcionando
         if "ms_parede" not in df.columns:
             df["ms_parede"] = float("nan")
 
@@ -51,46 +58,49 @@ def carregar(caminho_mpi, caminho_spark):
 
 
 def agregar(df, estatistica):
-    """Colapsa repetições: valor central (média/mediana/mín), desvio padrão e nº de execuções."""
-    chaves = ["framework", "algo", "N", "p"]
-    agg = df.groupby(chaves, as_index=False).agg(
+    """Colapsa repetições: valor central, desvio padrão e nº de execuções."""
+    agg = df.groupby(["framework", "algo", "N", "p"], as_index=False).agg(
         ms_total=("ms_total", estatistica),
-        desvio=("ms_total", "std"),
         ms_parede=("ms_parede", estatistica),
+        desvio_total=("ms_total", "std"),
+        desvio_parede=("ms_parede", "std"),
         execucoes=("ms_total", "size"),
     )
-    agg["desvio"] = agg["desvio"].fillna(0.0)  # 1 execução => sem desvio
-    return agg
+    return agg.fillna({"desvio_total": 0.0, "desvio_parede": 0.0})
 
 
 def calcular_metricas(agg):
-    """Adiciona speedup/eficiência próprios e relativos ao MPI com p=1."""
+    """Speedup e eficiência de cada framework contra ele mesmo, para ms_total e ms_parede."""
     partes = []
     for (fw, algo, n), g in agg.groupby(["framework", "algo", "N"]):
         g = g.sort_values("p").copy()
-
-        # baseline próprio: p=1 do mesmo framework (ou menor p, com aviso)
         p_ref = g["p"].min()
         if p_ref != 1:
-            print(f"[aviso] {fw}/{algo}/N={n}: sem p=1; speedup próprio relativo a p={p_ref}.",
+            print(f"[aviso] {fw}/{algo}/N={n}: sem p=1; speedup relativo a p={p_ref}.",
                   file=sys.stderr)
-        t_ref = g.loc[g["p"] == p_ref, "ms_total"].iloc[0]
         g["p_ref"] = p_ref
-        g["speedup"] = t_ref / g["ms_total"]
-        g["eficiencia"] = g["speedup"] * p_ref / g["p"]
 
-        # baseline comum: MPI com p=1
-        base = agg[(agg["framework"] == "MPI") & (agg["algo"] == algo)
-                   & (agg["N"] == n) & (agg["p"] == 1)]
-        if base.empty:
-            g["speedup_vs_mpi"] = float("nan")
-            g["eficiencia_vs_mpi"] = float("nan")
-        else:
-            g["speedup_vs_mpi"] = base["ms_total"].iloc[0] / g["ms_total"]
-            g["eficiencia_vs_mpi"] = g["speedup_vs_mpi"] / g["p"]
+        for chave, coluna in METRICAS.items():
+            t_ref = g.loc[g["p"] == p_ref, coluna].iloc[0]
+            g[f"speedup_{chave}"] = t_ref / g[coluna]
+            g[f"eficiencia_{chave}"] = g[f"speedup_{chave}"] * p_ref / g["p"]
         partes.append(g)
 
     return pd.concat(partes, ignore_index=True)
+
+
+def calcular_razao(res):
+    """Razão MPI/Spark no mesmo p. Valores > 1 significam que o Spark foi mais rápido."""
+    mpi = res[res["framework"] == "MPI"].set_index(["algo", "N", "p"])
+    spark = res[res["framework"] == "Spark"].set_index(["algo", "N", "p"])
+    comuns = mpi.index.intersection(spark.index)
+    if len(comuns) == 0:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(index=comuns)
+    for chave, coluna in METRICAS.items():
+        out[f"razao_{chave}"] = mpi.loc[comuns, coluna] / spark.loc[comuns, coluna]
+    return out.reset_index()
 
 
 # ----------------------------------------------------------------------
@@ -102,7 +112,7 @@ def _grade(res, titulo):
     ns = sorted(res["N"].unique())
     algos = [a for a in ORDEM_ALGOS if a in set(res["algo"])]
     fig, eixos = plt.subplots(len(ns), len(algos), squeeze=False,
-                              figsize=(5.2 * len(algos), 4.0 * len(ns)),
+                              figsize=(5.4 * len(algos), 4.2 * len(ns)),
                               constrained_layout=True)
     fig.suptitle(titulo, fontsize=14)
     return fig, eixos, ns, algos
@@ -118,47 +128,20 @@ def _acabamento(ax, n, algo, procs, ylabel, primeira_coluna):
     ax.grid(True, alpha=0.3)
 
 
-def _desenhar(ax, d, y, rotulo, fw, ls="-", marker=None):
-    """Linha com marcador; um ponto isolado (ex.: MPI só com p=1) fica visível do mesmo jeito."""
-    ax.plot(d["p"], d[y], label=rotulo, color=COR[fw], ls=ls,
-            marker=marker or MARCA[fw], markersize=7)
+def _linha(ax, d, fw, y, metrica, desvio=None):
+    """Uma curva de um framework. Marcador cheio p/ ms_total, vazado p/ ms_parede."""
+    est = ESTILO_METRICA[metrica]
+    cheio = metrica == "total"
+    kwargs = dict(color=COR[fw], marker=MARCA[fw], markersize=7, ls=est["ls"], alpha=est["alpha"],
+                  markerfacecolor=COR[fw] if cheio else "white",
+                  label=f"{fw} ({ROTULO_METRICA[metrica]})")
+    if desvio is not None and d[desvio].max() > 0:
+        ax.errorbar(d["p"], d[y], yerr=d[desvio], capsize=3, **kwargs)
+    else:
+        ax.plot(d["p"], d[y], **kwargs)
 
 
-def grafico_tempo(res):
-    fig, eixos, ns, algos = _grade(res, "Tempo de execução: MPI vs Spark")
-
-    for i, n in enumerate(ns):
-        for j, algo in enumerate(algos):
-            ax = eixos[i][j]
-            sub = res[(res["N"] == n) & (res["algo"] == algo)]
-            procs = sorted(sub["p"].unique())
-
-            mpi = sub[sub["framework"] == "MPI"].sort_values("p")
-            spark = sub[sub["framework"] == "Spark"].sort_values("p")
-
-            if not mpi.empty:
-                rot = "MPI (média ± desvio)" if mpi["execucoes"].max() > 1 else "MPI"
-                ax.errorbar(mpi["p"], mpi["ms_total"], yerr=mpi["desvio"], color=COR["MPI"],
-                            marker=MARCA["MPI"], markersize=8, capsize=4, ls="-", label=rot)
-                # referência horizontal: tempo sequencial do MPI
-                base = mpi.loc[mpi["p"] == 1, "ms_total"]
-                if not base.empty and len(mpi) == 1:
-                    ax.axhline(base.iloc[0], color=COR["MPI"], ls=":", alpha=0.6)
-
-            if not spark.empty:
-                _desenhar(ax, spark, "ms_total", "Spark (tarefa mais lenta)", "Spark")
-                if spark["ms_parede"].notna().any():
-                    _desenhar(ax, spark, "ms_parede", "Spark (parede, com overhead)", "Spark",
-                              ls="--", marker="^")
-
-            ax.set_yscale("log")
-            _acabamento(ax, n, algo, procs, "tempo (ms, escala log)", j == 0)
-            if i == 0 and j == 0:
-                ax.legend(fontsize=8)
-    return fig
-
-
-def _grafico_metrica(res, titulo, col_propria, col_vs_mpi, ylabel, ideal):
+def _desenhar_grade(res, titulo, ylabel, prefixo, ideal, usar_erro=False, log=False):
     fig, eixos, ns, algos = _grade(res, titulo)
 
     for i, n in enumerate(ns):
@@ -167,47 +150,72 @@ def _grafico_metrica(res, titulo, col_propria, col_vs_mpi, ylabel, ideal):
             sub = res[(res["N"] == n) & (res["algo"] == algo)]
             procs = sorted(sub["p"].unique())
 
-            ideal(ax, procs)
+            if ideal:
+                ideal(ax, procs)
+
             for fw in ["MPI", "Spark"]:
                 d = sub[sub["framework"] == fw].sort_values("p")
                 if d.empty:
                     continue
-                if len(d) > 1:  # com um ponto só, o speedup próprio é trivialmente 1
-                    _desenhar(ax, d, col_propria, f"{fw} (baseline: {fw} p=1)", fw)
-                if fw != "MPI" and d[col_vs_mpi].notna().any():
-                    _desenhar(ax, d, col_vs_mpi, f"{fw} (baseline: MPI p=1)", fw,
-                              ls="--", marker="^")
+                for metrica in METRICAS:
+                    y = f"{prefixo}_{metrica}" if prefixo else METRICAS[metrica]
+                    if d[y].notna().any():
+                        _linha(ax, d, fw, y, metrica,
+                               desvio=f"desvio_{metrica}" if usar_erro else None)
 
-            # MPI sequencial: ponto de partida comum
-            mpi1 = sub[(sub["framework"] == "MPI") & (sub["p"] == 1)]
-            if not mpi1.empty:
-                ax.plot([1], [1], marker="o", color=COR["MPI"], ls="", markersize=8,
-                        label="MPI p=1 (baseline)")
-
+            if log:
+                ax.set_yscale("log")
             _acabamento(ax, n, algo, procs, ylabel, j == 0)
             if i == 0 and j == 0:
                 ax.legend(fontsize=8)
     return fig
 
 
-def _ideal_speedup(ax, procs):
-    ax.plot(procs, procs, color="gray", ls=":", label="ideal (linear)")
-
-
-def _ideal_eficiencia(ax, procs):
-    ax.axhline(1.0, color="gray", ls=":", label="ideal (100%)")
+def grafico_tempo(res):
+    return _desenhar_grade(res, "Tempo de execução: MPI vs Spark", "tempo (ms, escala log)",
+                           prefixo=None, ideal=None, usar_erro=True, log=True)
 
 
 def grafico_speedup(res):
-    return _grafico_metrica(res, "Speedup: MPI vs Spark", "speedup", "speedup_vs_mpi",
-                            "speedup", _ideal_speedup)
+    def ideal(ax, procs):
+        ax.plot(procs, procs, color="gray", ls=":", label="ideal (linear)")
+    return _desenhar_grade(res, "Speedup: MPI vs Spark", "speedup  T(1) / T(p)",
+                           prefixo="speedup", ideal=ideal)
 
 
 def grafico_eficiencia(res):
-    fig = _grafico_metrica(res, "Eficiência: MPI vs Spark", "eficiencia", "eficiencia_vs_mpi",
-                           "eficiência (speedup / p)", _ideal_eficiencia)
+    def ideal(ax, _procs):
+        ax.axhline(1.0, color="gray", ls=":", label="ideal (100%)")
+    fig = _desenhar_grade(res, "Eficiência: MPI vs Spark", "eficiência  speedup / p",
+                          prefixo="eficiencia", ideal=ideal)
     for ax in fig.axes:
         ax.set_ylim(bottom=0)
+    return fig
+
+
+def grafico_comparacao_direta(razao):
+    """MPI/Spark no mesmo p: acima da linha 1, o Spark foi mais rápido."""
+    fig, eixos, ns, algos = _grade(razao, "Comparação direta no mesmo p: tempo MPI / tempo Spark")
+
+    for i, n in enumerate(ns):
+        for j, algo in enumerate(algos):
+            ax = eixos[i][j]
+            d = razao[(razao["N"] == n) & (razao["algo"] == algo)].sort_values("p")
+            procs = sorted(d["p"].unique())
+
+            ax.axhline(1.0, color="gray", ls=":", label="empate")
+            for metrica in METRICAS:
+                y = f"razao_{metrica}"
+                if d[y].notna().any():
+                    est = ESTILO_METRICA[metrica]
+                    ax.plot(d["p"], d[y], color="tab:green", marker="D", markersize=6,
+                            ls=est["ls"], alpha=est["alpha"],
+                            markerfacecolor="tab:green" if metrica == "total" else "white",
+                            label=ROTULO_METRICA[metrica])
+
+            _acabamento(ax, n, algo, procs, "MPI / Spark  (>1: Spark mais rápido)", j == 0)
+            if i == 0 and j == 0:
+                ax.legend(fontsize=8)
     return fig
 
 
@@ -225,16 +233,25 @@ def main():
     ap.add_argument("--sem-janela", action="store_true", help="só salva os PNGs")
     args = ap.parse_args()
 
-    df = carregar(args.mpi, args.spark)
-    res = calcular_metricas(agregar(df, args.estatistica))
+    res = calcular_metricas(agregar(carregar(args.mpi, args.spark), args.estatistica))
+    razao = calcular_razao(res)
 
     os.makedirs(args.saida, exist_ok=True)
     res.to_csv(os.path.join(args.saida, "resumo.csv"), index=False)
     print(res.round(3).to_string(index=False))
+    if not razao.empty:
+        print("\nRazão MPI/Spark (>1: Spark mais rápido):")
+        print(razao.round(3).to_string(index=False))
 
-    for nome, fig in {"tempo": grafico_tempo(res),
-                      "speedup": grafico_speedup(res),
-                      "eficiencia": grafico_eficiencia(res)}.items():
+    figuras = {
+        "tempo": grafico_tempo(res),
+        "speedup": grafico_speedup(res),
+        "eficiencia": grafico_eficiencia(res),
+    }
+    if not razao.empty:
+        figuras["comparacao_direta"] = grafico_comparacao_direta(razao)
+
+    for nome, fig in figuras.items():
         caminho = os.path.join(args.saida, f"{nome}.png")
         fig.savefig(caminho, dpi=150)
         print(f"salvo: {caminho}")

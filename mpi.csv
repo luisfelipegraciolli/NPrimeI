@@ -1,0 +1,4 @@
+framework,algo,ms_total,N,N_processos
+MPI,trivial,4.979,1000,1
+MPI,raiz,0.655,1000,1
+MPI,crivo,0.215,1000,1

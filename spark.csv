@@ -1,0 +1,7 @@
+framework,algo,ms_total,ms_parede,N,N_particoes
+Spark,trivial,0.092,183.406,100,2
+Spark,raiz,0.072,123.21,100,2
+Spark,crivo,0.081,156.517,100,2
+Spark,trivial,20428.068,20528.329,100000,2
+Spark,raiz,95.831,172.98,100000,2
+Spark,crivo,12.584,113.157,100000,2

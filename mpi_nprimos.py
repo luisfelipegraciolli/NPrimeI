@@ -3,8 +3,11 @@ from mpi4py import MPI
 import numpy as np
 import sys
 import math
+import os
+import csv
 
 N_PADRAO = 1_000
+CSV_ARQUIVO = "mpi.csv"
 
 
 def prime_nums_interval(is_prime_function, inicio, fim):
@@ -144,6 +147,21 @@ def imprimir_resumo(consolidados, n, quantidade_processos):
     else:
         print("ATENÇÃO: os algoritmos encontraram primos diferentes!")
 
+def salvar_csv(consolidados, n, size, caminho=CSV_ARQUIVO):
+    """Acrescenta uma linha por algoritmo em 'caminho': algo, ms_total, n.
+ 
+    O cabeçalho só é escrito se o arquivo ainda não existe (ou está vazio),
+    então várias execuções com N diferentes ficam no mesmo arquivo.
+    """
+    arquivo_novo = not os.path.exists(caminho) or os.path.getsize(caminho) == 0
+ 
+    with open(caminho, "a", newline="") as arquivo:
+        escritor = csv.writer(arquivo)
+        if arquivo_novo:
+            escritor.writerow(["framework", "algo", "ms_total", "N", "N_processos"])
+        for nome, c in consolidados.items():
+            escritor.writerow(["MPI", nome, round(c["total_ms"], 3), n, size])
+
 
 def main():
     comm = MPI.COMM_WORLD
@@ -184,6 +202,7 @@ def main():
 
     
     if rank == 0:
+        salvar_csv(consolidados, n, size)
         imprimir_resumo(consolidados, n, size)
 
 

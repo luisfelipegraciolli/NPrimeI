@@ -19,16 +19,6 @@ def prime_nums_interval(is_prime_function, inicio, fim):
     return list_of_primes
 
 
-def is_prime_trivial(n):
-    if n<=1:
-        return False
-    
-    for i in range(2, n):
-        if n % i == 0:
-            return False
-    
-    return True
-
 
 # Trivial: menores que sqrt(n)
 
@@ -102,7 +92,6 @@ def primos_crivo(inicio, fim):
 
 # Fazer com que o MPI rode esses algotimos
 ALGORITMOS = {
-    "trivial": primos_trivial,
     "raiz": primos_raiz,
     "crivo": primos_crivo,
 }

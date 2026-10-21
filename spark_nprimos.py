@@ -31,15 +31,6 @@ def prime_nums_interval(is_prime_function, inicio, fim):
     return [n for n in range(inicio, fim) if is_prime_function(n)]
 
 
-def is_prime_trivial(n):
-    if n <= 1:
-        return False
-    for i in range(2, n):
-        if n % i == 0:
-            return False
-    return True
-
-
 def is_prime_sqrt(n):
     if n <= 1:
         return False
@@ -93,7 +84,6 @@ def primos_crivo(inicio, fim):
 
 
 ALGORITMOS = {
-    "trivial": primos_trivial,
     "raiz": primos_raiz,
     "crivo": primos_crivo,
 }

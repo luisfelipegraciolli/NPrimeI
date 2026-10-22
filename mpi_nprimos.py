@@ -45,7 +45,7 @@ def primos_raiz(inicio, fim):
     return prime_nums_interval(is_prime_sqrt, inicio, fim)
 
 
-# Crivo de Eratóstenes clássico: O(n log log n)
+# Crivo de Eratóstenes clássico: O(n log n)
 def primos_ate(n):
     if n < 2:
         return []
@@ -132,7 +132,7 @@ def imprimir_resumo(consolidados, n, quantidade_processos):
 
     print()
     if todos_iguais(consolidados):
-        print("Os três algoritmos encontraram os mesmos primos.")
+        print("Os algoritmos encontraram os mesmos primos.")
     else:
         print("ATENÇÃO: os algoritmos encontraram primos diferentes!")
 
